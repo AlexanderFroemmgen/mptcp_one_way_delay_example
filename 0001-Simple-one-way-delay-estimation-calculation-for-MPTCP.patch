@@ -1,0 +1,70 @@
+From 032ff8e9de48dda167148c3a413d0a7df51b48bf Mon Sep 17 00:00:00 2001
+From: froemmge <froemmge@dvs.tu-darmstadt.de>
+Date: Thu, 29 Mar 2018 21:35:32 +0200
+Subject: [PATCH 1/1] Simple one-way delay estimation calculation for MPTCP
+
+---
+ include/net/mptcp.h     |  3 +++
+ net/mptcp/mptcp_input.c | 26 ++++++++++++++++++++++++++
+ 2 files changed, 29 insertions(+)
+
+diff --git a/include/net/mptcp.h b/include/net/mptcp.h
+index ffd1d42..7413fb1 100644
+--- a/include/net/mptcp.h
++++ b/include/net/mptcp.h
+@@ -202,6 +202,9 @@ struct mptcp_tcp_sock {
+ 
+ 	/* HMAC of the third ack */
+ 	char sender_mac[20];
++
++	u32 mptcp_delay_in_estimator;
++	u32 mptcp_delay_out_estimator;
+ };
+ 
+ struct mptcp_tw {
+diff --git a/net/mptcp/mptcp_input.c b/net/mptcp/mptcp_input.c
+index 1e73b4e..900d201 100644
+--- a/net/mptcp/mptcp_input.c
++++ b/net/mptcp/mptcp_input.c
+@@ -2104,12 +2104,38 @@ static inline void mptcp_path_array_check(struct sock *meta_sk)
+ 	}
+ }
+ 
++void mptcp_update_owd_stats(struct sock *sk, const struct sk_buff *skb) {
++	/*
++	 * Size considerations: we subtract two u32 values, the result might
++	 * have a sign (requires 33 bit)
++	 * However, we can safely ignore the highest bit of the u32 values
++	 * (0x80000000),
++	 * add 1 << 32 (0x80000000and) for the subtraction and store it as u32.
++	 */
++
++	// TODO: check if timestamp option is available
++	// TODO: do we want to have some kind of smoothing?
++
++	struct tcp_sock* tp = tcp_sk(sk);
++	const u32 first_bit_set = 0x80000000;
++	const u32 first_bit_not_set = 0x7FFFFFFF;
++
++	tp->mptcp->mptcp_delay_in_estimator =
++	    (first_bit_set + (tcp_jiffies32 & first_bit_not_set)) -
++	    (tp->rx_opt.rcv_tsval & first_bit_not_set);
++	tp->mptcp->mptcp_delay_out_estimator =
++	    (first_bit_set + (tp->rx_opt.rcv_tsval & first_bit_not_set)) -
++	    (tp->rx_opt.rcv_tsecr & first_bit_not_set);
++}
++
+ bool mptcp_handle_options(struct sock *sk, const struct tcphdr *th,
+ 			  const struct sk_buff *skb)
+ {
+ 	struct tcp_sock *tp = tcp_sk(sk);
+ 	struct mptcp_options_received *mopt = &tp->mptcp->rx_opt;
+ 
++	mptcp_update_owd_stats(sk, skb);
++
+ 	if (tp->mpcb->infinite_mapping_rcv || tp->mpcb->infinite_mapping_snd)
+ 		return false;
+ 
+-- 
+2.7.4
+
